@@ -257,16 +257,16 @@ class StockbitBackloader:
                 err_str = str(exc)
                 log.warning(f"API {method_name} gagal (percobaan {attempt+1}/{max_retries}): {err_str}")
 
-                if any(code in err_str for code in ("429", "403", "502", "503", "500")):
-                    log.warning(f"Rate-limited / server error. Backoff {backoff:.0f}s ...")
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2.0, 120.0)
-                    try:
-                        client.load_headers()
-                    except Exception:
-                        pass
-                else:
-                    raise  # Non-retriable
+                if any(code in err_str for code in ("400", "404", "401")):
+                    raise  # Non-retriable client errors
+                
+                log.warning(f"Server error atau masalah koneksi jaringan. Mencoba kembali dengan backoff {backoff:.0f}s ...")
+                time.sleep(backoff)
+                backoff = min(backoff * 2.0, 120.0)
+                try:
+                    client.load_headers()
+                except Exception:
+                    pass
 
         raise Exception(f"API {method_name} gagal setelah {max_retries} percobaan: {last_exc}")
 
@@ -584,15 +584,15 @@ class StockbitBackloader:
         limit = 100
 
         for d in trading_dates:
-            # Idempoten: skip jika ada di checkpoint ATAU sudah ada di DB
+            # Idempoten: skip jika ada di checkpoint (sumber kebenaran kelengkapan)
             d_str = d if isinstance(d, str) else d.isoformat()
-            if d_str in completed or self._running_trades_exist(symbol, d_str):
-                completed.add(d_str)
+            if d_str in completed:
                 skip += 1
                 continue
 
             log.info(f"[{symbol}] Running trades scroll pagination: {d_str} ...")
             page, last_trade_num, day_total = 1, None, 0
+            success = True
 
             while True:
                 kwargs = {"symbols": [symbol], "date": d_str, "limit": limit}
@@ -604,6 +604,7 @@ class StockbitBackloader:
                     payload, url = self._api_call(client, "get_running_trade", kwargs)
                 except Exception as e:
                     log.error(f"[{symbol}] Running trades {d_str} page {page} failed: {e}")
+                    success = False
                     break
 
                 trades = payload.get("data", {}).get("running_trade", [])
@@ -624,15 +625,17 @@ class StockbitBackloader:
 
                 page += 1
 
-            log.info(f"[{symbol}] RT {d_str} selesai: {day_total} trades total.")
-            completed.add(d_str)
-            ok += 1
-
-            if ok % 5 == 0:
-                with self._checkpoint_lock:
-                    prog["running_trades_dates"] = list(completed)
-                    self._checkpoint["completed_tickers"][symbol] = prog
-                    self._save_checkpoint()
+            if success:
+                log.info(f"[{symbol}] RT {d_str} selesai: {day_total} trades total.")
+                completed.add(d_str)
+                ok += 1
+                if ok % 5 == 0:
+                    with self._checkpoint_lock:
+                        prog["running_trades_dates"] = list(completed)
+                        self._checkpoint["completed_tickers"][symbol] = prog
+                        self._save_checkpoint()
+            else:
+                log.warning(f"[{symbol}] RT {d_str} tidak selesai karena kesalahan jaringan/API. Checkpoint dilewati.")
 
         with self._checkpoint_lock:
             prog["running_trades_dates"] = list(completed)

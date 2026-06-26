@@ -47,12 +47,14 @@ def check_ticker_completeness(conn, symbol, date_str, eod_only=False):
     except Exception as e:
         raise ValueError(f"Invalid date format: {date_str}. Must be YYYY-MM-DD. Error: {e}")
 
-    # 2. Check daily OHLCV EOD candle count
+    # 2. Check daily OHLCV EOD candle count and volume
     cursor.execute(
-        "SELECT COUNT(*) FROM ohlcv_data WHERE symbol = %s AND date = %s AND time = 'EOD'",
+        "SELECT COUNT(*), COALESCE(SUM(volume), 0) FROM ohlcv_data WHERE symbol = %s AND date = %s AND time = 'EOD'",
         (symbol, date_str)
     )
-    ohlcv_count = cursor.fetchone()[0]
+    res_eod = cursor.fetchone()
+    ohlcv_count = res_eod[0]
+    eod_volume = res_eod[1]
 
     # Check daily OHLCV Intraday (1-min) candle count
     cursor.execute(
@@ -84,11 +86,13 @@ def check_ticker_completeness(conn, symbol, date_str, eod_only=False):
 
     # Completeness flags
     has_ohlcv = ohlcv_count > 0
-    has_intraday = intraday_count > 0
+    is_zero_volume_day = has_ohlcv and eod_volume == 0
+    
+    has_intraday = intraday_count > 0 or is_zero_volume_day
     # IHSG is an index, it does not have broker summary data.
-    has_broker_summary = bs_count > 0 or symbol.upper() == "IHSG"
-    has_foreign_flow = bda_count > 0
-    has_running_trades = rt_count > 0
+    has_broker_summary = bs_count > 0 or symbol.upper() == "IHSG" or is_zero_volume_day
+    has_foreign_flow = bda_count > 0 or is_zero_volume_day
+    has_running_trades = rt_count > 0 or is_zero_volume_day
 
     # EOD-only completeness requires EOD candles, Broker Summary (for stocks), and Foreign Flow.
     is_eod_complete = has_ohlcv and has_broker_summary and has_foreign_flow

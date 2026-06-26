@@ -3,8 +3,16 @@ from .utils import clean_int, clean_float
 
 def parse_running_trade(db, path, parsed_url, payload, timestamp):
     """Memproses data running trade harian (market board RG)."""
+    from datetime import datetime
+    
     data = payload.get("data", {})
     running_trades = data.get("running_trade", [])
+    
+    # Ambil date query parameter dari URL
+    qs = parse_qs(parsed_url.query)
+    date_strs = qs.get("date")
+    date_str = date_strs[0] if date_strs else None
+    
     trades_list = []
     for rt in running_trades:
         # Hanya ambil Papan Regular (RG) untuk Tape Reading
@@ -21,11 +29,22 @@ def parse_running_trade(db, path, parsed_url, payload, timestamp):
         else:
             val_raw = int(val_raw)
             
+        # Hitung timestamp eksak dengan menggabungkan query date + time transaksi
+        time_str = rt.get("time")
+        trade_ts = timestamp  # fallback
+        if date_str and time_str:
+            try:
+                t_str = time_str.split(".")[0] if "." in time_str else time_str
+                dt = datetime.strptime(f"{date_str} {t_str[:8]}", "%Y-%m-%d %H:%M:%S")
+                trade_ts = dt.timestamp()
+            except Exception:
+                pass
+            
         trades_list.append({
             "trade_id": rt.get("id"),
             "trade_number": clean_int(rt.get("trade_number")),
-            "timestamp": timestamp,
-            "time_str": rt.get("time"),
+            "timestamp": trade_ts,
+            "time_str": time_str,
             "symbol": rt.get("code"),
             "price": price,
             "lot": lot,
