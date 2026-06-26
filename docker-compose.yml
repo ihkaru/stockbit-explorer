@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: stockbit_timescaledb
+    restart: always
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: stockbit_explorer
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PGPASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    shm_size: '256mb'
+    command: >
+      postgres
+        -c shared_buffers=512MB
+        -c effective_cache_size=1536MB
+        -c work_mem=16MB
+        -c maintenance_work_mem=256MB
+        -c max_wal_size=2GB
+        -c checkpoint_completion_target=0.9
+        -c random_page_cost=1.1
+        -c max_connections=40
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stockbit_explorer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: stockbit_pgbouncer
+    restart: always
+    ports:
+      - "6432:5432"
+    environment:
+      DATABASE_URL: postgres://postgres:${PGPASSWORD:-postgres}@timescaledb:5432/stockbit_explorer
+      POOL_MODE: transaction
+      MAX_DB_CONNECTIONS: 30
+      DEFAULT_POOL_SIZE: 20
+      MAX_CLIENT_CONN: 150
+      ADMIN_USERS: postgres
+      AUTH_TYPE: scram-sha-256
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  worker:
+    build: .
+    container_name: stockbit_worker
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://postgres:${PGPASSWORD:-postgres}@pgbouncer:5432/stockbit_explorer
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      timescaledb:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+    driver: local
